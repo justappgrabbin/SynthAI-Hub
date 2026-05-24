@@ -1,165 +1,45 @@
-
-# Build the COMPLETE repo structure for auto-deploy to Render
-# This is what Synthia generates when you say "populate the repo"
-
-import os
-
-repo_dir = '/mnt/agents/output/synthia-repo'
-os.makedirs(repo_dir, exist_ok=True)
-os.makedirs(f'{repo_dir}/.github/workflows', exist_ok=True)
-os.makedirs(f'{repo_dir}/src', exist_ok=True)
-os.makedirs(f'{repo_dir}/public', exist_ok=True)
-os.makedirs(f'{repo_dir}/mcp-servers', exist_ok=True)
-
-# 1. GitHub Actions Workflow — auto-deploy to Render
-workflow_yml = '''name: Synthia Deploy
+name: Synthia Deploy
 
 on:
   push:
-    branches: [main, master]
+    branches:
+      - main
+      - master
   workflow_dispatch:
-    inputs:
-      deploy_target:
-        description: 'Deploy target'
-        required: true
-        default: 'render'
-        type: choice
-        options:
-          - render
-          - preview
-      notify_crew:
-        description: 'Notify crew on completion'
-        required: false
-        default: true
-        type: boolean
-
-env:
-  NODE_VERSION: '20'
-  RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
-  RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    name: Build Synthia Substrate
+
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
+          node-version: '20'
+          cache: npm
 
       - name: Install dependencies
+        run: npm install
+
+      - name: Build project
         run: |
-          npm ci
-          npm run build
+          if [ -f package.json ]; then
+            npm run build --if-present
+          else
+            echo "No package.json found"
+          fi
 
       - name: Run tests
-        run: npm test
-        continue-on-error: true
+        run: npm test --if-present
 
-      - name: Build artifact
-        run: |
-          mkdir -p dist
-          cp public/index.html dist/
-          cp -r src dist/
-          cp package.json dist/
-          echo "Build complete: $(date)" > dist/build-info.txt
-          echo "Commit: ${{ github.sha }}" >> dist/build-info.txt
-          echo "Branch: ${{ github.ref_name }}" >> dist/build-info.txt
-
-      - name: Upload build artifact
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: synthia-build
-          path: dist/
-          retention-days: 7
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    name: Deploy to Render
-    if: github.ref == 'refs/heads/main' || github.event.inputs.deploy_target == 'render'
-    steps:
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: synthia-build
-          path: dist/
-
-      - name: Deploy to Render
-        run: |
-          echo "Deploying to Render..."
-          curl -X POST "https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/deploys" \
-            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "clearCache": "do_not_clear",
-              "notify": false
-            }'
-          echo "Deploy triggered at $(date)"
-
-      - name: Notify Synthia Hub
-        run: |
-          curl -X POST "${{ secrets.SYNTHIA_HUB_URL }}/api/deploy" \
-            -H "Authorization: Bearer ${{ secrets.SYNTHIA_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "repo": "${{ github.repository }}",
-              "commit": "${{ github.sha }}",
-              "branch": "${{ github.ref_name }}",
-              "deploy_target": "${{ github.event.inputs.deploy_target || 'render' }}",
-              "status": "deployed",
-              "timestamp": "'$(date -Iseconds)'"
-            }'
-        continue-on-error: true
-
-      - name: Notify Crew (Slack)
-        if: github.event.inputs.notify_crew != 'false'
-        run: |
-          curl -X POST "${{ secrets.SLACK_WEBHOOK_URL }}" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "text": "🚀 Synthia deployed to Render!\\nRepo: ${{ github.repository }}\\nCommit: ${{ github.sha }}\\nBranch: ${{ github.ref_name }}\\nTime: '$(date)'"
-            }'
-        continue-on-error: true
-
-      - name: Update deployment status
-        uses: chrnorm/deployment-status@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          state: success
-          deployment-id: ${{ steps.deployment.outputs.deployment_id }}
-        continue-on-error: true
-
-  notify:
-    needs: deploy
-    runs-on: ubuntu-latest
-    name: Post-Deploy Orchestration
-    steps:
-      - name: Trigger Synthia post-deploy
-        run: |
-          echo "Synthia post-deploy tasks:"
-          echo "1. Rebuild RAG index"
-          echo "2. Sync MCP connections"
-          echo "3. Notify crew of new deployment"
-          echo "4. Check financial runway"
-          
-          # Call Synthia hub API to run post-deploy tasks
-          curl -X POST "${{ secrets.SYNTHIA_HUB_URL }}/api/post-deploy" \
-            -H "Authorization: Bearer ${{ secrets.SYNTHIA_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "deploy_id": "${{ github.run_id }}",
-              "tasks": ["rebuild_index", "sync_mcp", "notify_crew", "check_runway"]
-            }'
-        continue-on-error: true
-'''
-
-with open(f'{repo_dir}/.github/workflows/deploy.yml', 'w') as f:
-    f.write(workflow_yml)
-
-print("✅ .github/workflows/deploy.yml written")
+          name: synthai-build
+          path: |
+            dist
+            build
+          if-no-files-found: ignore
